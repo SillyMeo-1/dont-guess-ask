@@ -1,0 +1,27 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Syntax check
+        run: |
+          node --check index.js
+          node --check host/settings.js
+          node --check client.js
+      - name: JSON manifests
+        run: |
+          node -e "for (const f of ['package.json','locale/en.json','locale/zh.json']) JSON.parse(require('node:fs').readFileSync(f,'utf8')); console.log('json ok')"

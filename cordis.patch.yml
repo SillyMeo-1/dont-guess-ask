@@ -1,0 +1,4 @@
+# Insert the "我不猜会问你" plugin row into the profile.
+- insert:
+    - id: dont-guess-ask
+      name: '@local/dont-guess-ask'
