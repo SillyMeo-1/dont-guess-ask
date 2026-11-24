@@ -13,7 +13,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MODES, registerSettingsApi } from './host/settings.js'
+import { MODES, POSITIONS, registerSettingsApi } from './host/settings.js'
 
 export const name = 'dont-guess-ask'
 
@@ -106,7 +106,10 @@ export function apply(ctx, config = {}) {
   // gets the rule and the tool.
   ctx.inject(['webServer'], webCtx => {
     webCtx.effect(
-      () => registerSettingsApi(webCtx, ctx, () => settings.mode),
+      () => registerSettingsApi(webCtx, ctx, {
+        mode: () => settings.mode,
+        position: () => settings.bannerPosition,
+      }),
       'dont-guess-ask: settings api',
     )
   })
@@ -236,6 +239,9 @@ function startWaitBanner(ctx, exec, settings) {
       stopFile: stopPath,
       delayMs: settings.bannerDelayMs,
       pollMs: 600,
+      position: settings.bannerPosition,
+      offsetX: settings.bannerOffsetX,
+      offsetY: settings.bannerOffsetY,
     }), 'utf8')
     child = spawn('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
@@ -359,6 +365,8 @@ function resolveSettings(config) {
   const extra = readText(source.extraRule)
   const bannerText = readText(source.bannerText)
   const delay = Number(source.bannerDelayMs)
+  const offsetX = Number(source.bannerOffsetX)
+  const offsetY = Number(source.bannerOffsetY)
   return {
     mode,
     header: header === '' ? HEADER_DEFAULT : header,
@@ -366,5 +374,10 @@ function resolveSettings(config) {
     waitBanner: source.waitBanner !== false,
     bannerText: bannerText === '' ? '我还在等你回答' : bannerText,
     bannerDelayMs: Number.isFinite(delay) && delay >= 0 ? Math.min(Math.round(delay), 60000) : 1200,
+    bannerPosition: typeof source.bannerPosition === 'string' && POSITIONS.includes(source.bannerPosition)
+      ? source.bannerPosition
+      : 'top-left',
+    bannerOffsetX: Number.isFinite(offsetX) ? Math.round(offsetX) : 0,
+    bannerOffsetY: Number.isFinite(offsetY) ? Math.round(offsetY) : 0,
   }
 }

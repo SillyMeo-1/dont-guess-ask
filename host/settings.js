@@ -1,9 +1,10 @@
 /**
  * Settings API for the plugin's own profile row.
  *
- * The settings page chooses one policy mode. The write goes through the
- * profile's config editor: it persists an override row in the profile patch and
- * reloads this plugin, so the new policy applies to the next request.
+ * The settings page picks the policy mode and where the waiting banner sits.
+ * Both writes go through the profile's config editor: it persists an override
+ * row in the profile patch and reloads this plugin, so the change applies to the
+ * next question.
  */
 
 const PREFIX = '/dont-guess-api'
@@ -11,6 +12,9 @@ const MAX_BODY_BYTES = 8 * 1024
 
 /** Policy modes the page may select; anything else is rejected. */
 export const MODES = ['balanced', 'strict', 'light']
+
+/** Banner anchors the page may select. */
+export const POSITIONS = ['top-left', 'top-center', 'top-right', 'bottom-left', 'bottom-center', 'bottom-right']
 
 function sendJson(res, status, payload) {
   res.statusCode = status
@@ -44,7 +48,7 @@ async function readJson(req) {
   }
 }
 
-async function writeMode(ctx, mode) {
+async function writeConfig(ctx, patch) {
   const entry = ctx.fiber === undefined ? undefined : ctx.fiber.entry
   const editor = ctx.get('configEditor')
   if (entry === undefined || editor === undefined) {
@@ -52,7 +56,7 @@ async function writeMode(ctx, mode) {
   }
   await editor.edit(entry, (current, inherited) => {
     const base = current !== null && typeof current === 'object' ? current : inherited
-    return { ...base, mode }
+    return { ...base, ...patch }
   })
 }
 
@@ -71,7 +75,7 @@ function sameOrigin(req) {
  * Register `/dont-guess-api` on the composition's web server.
  * @param ctx context that has `webServer`
  * @param pluginCtx the plugin's own context, whose fiber owns the profile row
- * @param read live policy mode
+ * @param read live settings: `mode()` and `position()`
  * @returns the route disposer
  */
 export function registerSettingsApi(ctx, pluginCtx, read) {
@@ -79,7 +83,7 @@ export function registerSettingsApi(ctx, pluginCtx, read) {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const path = url.pathname.slice(PREFIX.length) || '/'
     if (req.method === 'GET' && path === '/state') {
-      sendJson(res, 200, { ok: true, data: { mode: read() } })
+      sendJson(res, 200, { ok: true, data: { mode: read.mode(), position: read.position() } })
       return
     }
     if (req.method === 'POST' && path === '/mode') {
@@ -90,8 +94,20 @@ export function registerSettingsApi(ctx, pluginCtx, read) {
       const body = await readJson(req)
       const mode = typeof body.mode === 'string' ? body.mode : ''
       if (!MODES.includes(mode)) throw httpError(`未知的提问频率：${mode || '（空）'}`, 400)
-      await writeMode(pluginCtx, mode)
-      sendJson(res, 200, { ok: true, data: { mode } })
+      await writeConfig(pluginCtx, { mode })
+      sendJson(res, 200, { ok: true, data: { mode, position: read.position() } })
+      return
+    }
+    if (req.method === 'POST' && path === '/position') {
+      if (!sameOrigin(req)) {
+        fail(res, 403, '拒绝跨站修改配置')
+        return
+      }
+      const body = await readJson(req)
+      const position = typeof body.position === 'string' ? body.position : ''
+      if (!POSITIONS.includes(position)) throw httpError(`未知的横幅位置：${position || '（空）'}`, 400)
+      await writeConfig(pluginCtx, { bannerPosition: position })
+      sendJson(res, 200, { ok: true, data: { mode: read.mode(), position } })
       return
     }
     fail(res, 404, '未知接口')

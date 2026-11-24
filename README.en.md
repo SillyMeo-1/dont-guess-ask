@@ -38,7 +38,7 @@ Things you already specified, answers I can look up in code or docs, and small r
 
 ## The waiting banner
 
-While a question is waiting and you are not looking at the session that asked it, a small orange-edged bar appears at the top centre of the screen: 「我还在等你回答」. Click it and DSH comes forward. It shows when any of these holds:
+While a question is waiting and you are not looking at the session that asked it, a **light-red fading to transparent** bar appears at the top-left of the screen: 「我还在等你回答」 in deep red. Click it and DSH comes forward. It shows when any of these holds:
 
 - DSH is minimized;
 - DSH is covered by another window (it is not the foreground window);
@@ -46,11 +46,14 @@ While a question is waiting and you are not looking at the session that asked it
 
 It stays hidden while you are looking at the asking session, and folds away the moment you return. A 1.2 s delay keeps it from flashing on a momentary switch.
 
-Configurable:
+Pick the corner in **Settings → Ask first** (top-left / top-centre / top-right / bottom-left / bottom-centre / bottom-right), or set it in config:
 
 | Key | Default | Effect |
 |---|---|---|
 | `waitBanner` | `true` | turn the banner off |
+| `bannerPosition` | `top-left` | one of `top-left` `top-center` `top-right` `bottom-left` `bottom-center` `bottom-right` |
+| `bannerOffsetX` | `0` | nudge the anchor horizontally, in pixels |
+| `bannerOffsetY` | `0` | nudge the anchor vertically, in pixels |
 | `bannerDelayMs` | `1200` | how long the condition must hold before it appears |
 | `bannerText` | 我还在等你回答 | the banner's headline |
 

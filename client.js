@@ -31,6 +31,14 @@ window.__ModuleLoader__.load({
       loadFailed: '读取设置失败',
       loginHint: '登录状态已失效，刷新页面后再试。',
       retry: '重试',
+      bannerTitle: '横幅位置',
+      bannerHint: '问题等你回答、而你没看着这个会话时，这条提示出现在屏幕的这个角；点它会回到 DSH。',
+      posTopLeft: '左上',
+      posTopCenter: '顶部居中',
+      posTopRight: '右上',
+      posBottomLeft: '左下',
+      posBottomCenter: '底部居中',
+      posBottomRight: '右下',
       footnote: '选择框左上角的小标签、追加规则（header / extraRule）仍在 profile 的 cordis.patch.yml 里改。',
     };
 
@@ -53,6 +61,14 @@ window.__ModuleLoader__.load({
       loadFailed: 'Could not load settings',
       loginHint: 'Your session expired; reload the page and try again.',
       retry: 'Retry',
+      bannerTitle: 'Banner position',
+      bannerHint: 'Where the waiting banner appears while a question waits and you are looking elsewhere; clicking it brings DSH back.',
+      posTopLeft: 'Top left',
+      posTopCenter: 'Top centre',
+      posTopRight: 'Top right',
+      posBottomLeft: 'Bottom left',
+      posBottomCenter: 'Bottom centre',
+      posBottomRight: 'Bottom right',
       footnote: 'The card tag and extra rules (header / extraRule) are still set in the profile cordis.patch.yml.',
     };
 
@@ -61,6 +77,16 @@ window.__ModuleLoader__.load({
       { id: 'balanced', title: 'balancedTitle', note: 'balancedNote' },
       { id: 'strict', title: 'strictTitle', note: 'strictNote' },
       { id: 'light', title: 'lightTitle', note: 'lightNote' },
+    ];
+
+    /** Banner anchors; copy lives in the dictionaries under `<id>`. */
+    const POSITIONS = [
+      { id: 'top-left', label: 'posTopLeft' },
+      { id: 'top-center', label: 'posTopCenter' },
+      { id: 'top-right', label: 'posTopRight' },
+      { id: 'bottom-left', label: 'posBottomLeft' },
+      { id: 'bottom-center', label: 'posBottomCenter' },
+      { id: 'bottom-right', label: 'posBottomRight' },
     ];
 
     /* -------------------------------------------------------------- */
@@ -150,6 +176,24 @@ window.__ModuleLoader__.load({
   color: var(--dsw-alias-brand-primary);
 }
 .dga-option-note { font-size: 12.5px; line-height: 1.45; color: var(--dsw-alias-label-secondary); }
+.dga-field { display: flex; flex-direction: column; gap: 8px; }
+.dga-field .dga-legend { margin: 0; }
+.dga-hint { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--dsw-alias-label-secondary); }
+.dga-pos-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.dga-pos {
+  padding: 9px 10px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color .15s ease;
+}
+.dga-pos:hover { border-color: var(--dsw-alias-border-l2); }
+.dga-pos.is-active { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.dga-pos:disabled { opacity: .6; cursor: default; }
 .dga-status { margin: 0; min-height: 18px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-state-success-primary); }
 .dga-status.is-pending { color: var(--dsw-alias-label-secondary); }
 .dga-error {
@@ -245,6 +289,7 @@ window.__ModuleLoader__.load({
 
     function SettingsPage({ t }) {
       const [mode, setMode] = useState(null);
+      const [position, setPosition] = useState(null);
       const [phase, setPhase] = useState('loading');
       const [error, setError] = useState(null);
 
@@ -254,6 +299,7 @@ window.__ModuleLoader__.load({
         try {
           const data = await request('/state');
           setMode(data.mode);
+          setPosition(data.position ?? 'top-left');
           setPhase('ready');
         } catch (err) {
           setError(errorText(err, t));
@@ -279,6 +325,22 @@ window.__ModuleLoader__.load({
         }
       }, [mode, phase, t]);
 
+      const choosePosition = useCallback(async (next) => {
+        if (phase === 'saving' || next === position) return;
+        const previous = position;
+        setPosition(next);
+        setPhase('saving');
+        setError(null);
+        try {
+          await request('/position', { method: 'POST', body: { position: next } });
+          setPhase('saved');
+        } catch (err) {
+          setPosition(previous);
+          setError(errorText(err, t));
+          setPhase('error');
+        }
+      }, [position, phase, t]);
+
       const status = phase === 'saving' ? t('saving') : phase === 'saved' ? t('saved') : '';
 
       return h('div', { className: 'dga-page' },
@@ -289,28 +351,52 @@ window.__ModuleLoader__.load({
         ),
         phase === 'loading'
           ? h('p', { className: 'dga-note' }, t('loading'))
-          : h('fieldset', { className: 'dga-group', disabled: phase === 'saving' },
-            h('legend', { className: 'dga-legend' }, t('frequency')),
-            MODES.map(entry => {
-              const active = mode === entry.id;
-              return h('label', { key: entry.id, className: 'dga-option' + (active ? ' is-active' : '') },
-                h('input', {
-                  type: 'radio',
-                  name: 'dga-mode',
-                  value: entry.id,
-                  checked: active,
-                  onChange: () => choose(entry.id),
-                }),
-                h('span', { className: 'dga-dot', 'aria-hidden': 'true' }),
-                h('span', { className: 'dga-copy' },
-                  h('span', { className: 'dga-option-head' },
-                    h('span', { className: 'dga-option-title' }, t(entry.title)),
-                    active ? h('span', { className: 'dga-current' }, t('current')) : null,
+          : h(React.Fragment, null,
+            h('fieldset', { className: 'dga-group', disabled: phase === 'saving' },
+              h('legend', { className: 'dga-legend' }, t('frequency')),
+              MODES.map(entry => {
+                const active = mode === entry.id;
+                return h('label', { key: entry.id, className: 'dga-option' + (active ? ' is-active' : '') },
+                  h('input', {
+                    type: 'radio',
+                    name: 'dga-mode',
+                    value: entry.id,
+                    checked: active,
+                    onChange: () => choose(entry.id),
+                  }),
+                  h('span', { className: 'dga-dot', 'aria-hidden': 'true' }),
+                  h('span', { className: 'dga-copy' },
+                    h('span', { className: 'dga-option-head' },
+                      h('span', { className: 'dga-option-title' }, t(entry.title)),
+                      active ? h('span', { className: 'dga-current' }, t('current')) : null,
+                    ),
+                    h('span', { className: 'dga-option-note' }, t(entry.note)),
                   ),
-                  h('span', { className: 'dga-option-note' }, t(entry.note)),
-                ),
-              );
-            }),
+                );
+              }),
+            ),
+            h('div', { className: 'dga-field' },
+              h('p', { className: 'dga-legend' }, t('bannerTitle')),
+              h('p', { className: 'dga-hint' }, t('bannerHint')),
+              h('div', {
+                className: 'dga-pos-grid',
+                role: 'radiogroup',
+                'aria-label': t('bannerTitle'),
+              },
+                POSITIONS.map(entry => {
+                  const active = position === entry.id;
+                  return h('button', {
+                    key: entry.id,
+                    type: 'button',
+                    role: 'radio',
+                    'aria-checked': active,
+                    className: 'dga-pos' + (active ? ' is-active' : ''),
+                    disabled: phase === 'saving' || position === null,
+                    onClick: () => choosePosition(entry.id),
+                  }, t(entry.label));
+                }),
+              ),
+            ),
           ),
         h('p', {
           className: 'dga-status' + (phase === 'saving' ? ' is-pending' : ''),
