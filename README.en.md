@@ -24,6 +24,7 @@ After install, a row named 我不猜会问你 (`@local/dont-guess-ask`) appears,
 - You can also type your own answer to override every candidate.
 - **Skip** means "stop asking about this": I proceed with the recommended option and say in one line that I assumed it.
 - **Closing the card** means you have something else to say: I stop, ask you in plain text how that part should work, and do not proceed with any candidate.
+- Switch to another session, reload the page, or close and reopen the window while DSH keeps running, and the unanswered question is kept — come back to that session and it is still there.
 
 ## When it shows up
 
