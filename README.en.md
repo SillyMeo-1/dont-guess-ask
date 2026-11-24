@@ -36,6 +36,24 @@ After install, a row named 我不猜会问你 (`@local/dont-guess-ask`) appears,
 
 Things you already specified, answers I can look up in code or docs, and small reversible choices — I decide those myself and say so.
 
+## The waiting banner
+
+While a question is waiting and you are not looking at the session that asked it, a small orange-edged bar appears at the top centre of the screen: 「我还在等你回答」. Click it and DSH comes forward. It shows when any of these holds:
+
+- DSH is minimized;
+- DSH is covered by another window (it is not the foreground window);
+- the window is showing a different session (judged by the window title).
+
+It stays hidden while you are looking at the asking session, and folds away the moment you return. A 1.2 s delay keeps it from flashing on a momentary switch.
+
+Configurable:
+
+| Key | Default | Effect |
+|---|---|---|
+| `waitBanner` | `true` | turn the banner off |
+| `bannerDelayMs` | `1200` | how long the condition must hold before it appears |
+| `bannerText` | 我还在等你回答 | the banner's headline |
+
 ## Try it
 
 Say "use dont_guess_ask to ask me whether to run tests first or update the docs", or hand me a vague request (something like "make the home page prettier") — you should see the choice card.

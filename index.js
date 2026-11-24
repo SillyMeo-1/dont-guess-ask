@@ -8,6 +8,11 @@
  * composer, so the plugin owns no question UI of its own.
  */
 
+import { spawn } from 'node:child_process'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { MODES, registerSettingsApi } from './host/settings.js'
 
 export const name = 'dont-guess-ask'
@@ -94,7 +99,7 @@ export function apply(ctx, config = {}) {
     'dont-guess-ask: policy section',
   )
   ctx.effect(
-    () => ctx.tools.register(createTool(ctx, settings.header)),
+    () => ctx.tools.register(createTool(ctx, settings)),
     'dont-guess-ask: tool',
   )
   // The settings page is optional: a composition without a web server still
@@ -107,7 +112,7 @@ export function apply(ctx, config = {}) {
   })
 }
 
-function createTool(ctx, header) {
+function createTool(ctx, settings) {
   return {
     name: TOOL_NAME,
     description: TOOL_DESCRIPTION,
@@ -150,12 +155,12 @@ function createTool(ctx, header) {
       return { card: 'generic', title: question === '' ? '需求确认' : question, kind: 'other' }
     },
     execute(args, exec) {
-      return run(ctx, header, args, exec)
+      return run(ctx, settings, args, exec)
     },
   }
 }
 
-async function run(ctx, header, args, exec) {
+async function run(ctx, settings, args, exec) {
   const question = readText(isRecord(args) ? args.question : undefined)
   const guess = readText(isRecord(args) ? args.guess : undefined)
   const options = readOptions(isRecord(args) ? args.options : undefined)
@@ -163,13 +168,14 @@ async function run(ctx, header, args, exec) {
   if (options.length < 2) throw new Error('options 少于 2 个：把用户可能想要的另一种理解也列出来。')
   if (options.length > 5) throw new Error('options 超过 5 个：只留最可能的 5 个，推荐项排第一。')
 
+  const stopBanner = startWaitBanner(ctx, exec, settings)
   let answer
   try {
     answer = await ctx.userQuestions.ask({
       questions: [{
         id: QUESTION_ID,
         question,
-        header,
+        header: settings.header,
         ...guess === '' ? {} : { detail: guess },
         options,
       }],
@@ -178,8 +184,93 @@ async function run(ctx, header, args, exec) {
     })
   } catch (error) {
     return fromFailure(error, exec.signal)
+  } finally {
+    stopBanner?.()
   }
   return fromAnswer(answer)
+}
+
+/** Path of the WinForms banner that marks a question waiting outside the app. */
+function bannerScript() {
+  return join(dirname(fileURLToPath(import.meta.url)), 'host', 'wait-banner.ps1')
+}
+
+/** The asking session's title, or '' when its projection is unavailable. */
+function sessionTitleOf(ctx, exec) {
+  try {
+    const session = exec?.agent?.session
+    if (session === undefined) return ''
+    const projections = ctx.get?.('sessionProjections')
+    if (projections === undefined || typeof projections.snapshot !== 'function') return ''
+    const value = projections.snapshot(session, ['title'])?.values?.title
+    return typeof value === 'string' ? value : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Raise a top-of-screen banner while the question waits and the person is not
+ * looking at this session: the app is minimized, behind another window, or its
+ * window title names a different session. The banner never takes focus, and a
+ * click brings the app forward. Best effort: a failed banner never fails the ask.
+ * @returns a disposer, or undefined when the banner is disabled or unavailable.
+ */
+function startWaitBanner(ctx, exec, settings) {
+  if (settings.waitBanner === false) return undefined
+  const title = sessionTitleOf(ctx, exec)
+  const directory = join(tmpdir(), 'dsh-wait-ask')
+  let paramsPath
+  let stopPath
+  let child
+  try {
+    mkdirSync(directory, { recursive: true })
+    const token = `${Date.now().toString(36)}-${process.pid.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    paramsPath = join(directory, `params-${token}.json`)
+    stopPath = join(directory, `stop-${token}.txt`)
+    writeFileSync(paramsPath, JSON.stringify({
+      pid: process.pid,
+      titleMatch: title,
+      text: settings.bannerText,
+      subtext: title === '' ? '点这里回到 DSH' : `会话：${title}`,
+      stopFile: stopPath,
+      delayMs: settings.bannerDelayMs,
+      pollMs: 600,
+    }), 'utf8')
+    child = spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-WindowStyle', 'Hidden', '-File', bannerScript(), '-ParamsPath', paramsPath,
+    ], { stdio: 'ignore', windowsHide: true })
+    child.on('error', () => undefined)
+    child.unref()
+  } catch {
+    return undefined
+  }
+  let stopped = false
+  return () => {
+    if (stopped) return
+    stopped = true
+    try {
+      writeFileSync(stopPath, 'stop', 'utf8')
+    } catch {
+      // The kill below is the authoritative stop.
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill()
+      } catch {
+        // Already gone.
+      }
+      for (const file of [paramsPath, stopPath]) {
+        try {
+          rmSync(file, { force: true })
+        } catch {
+          // Best effort.
+        }
+      }
+    }, 2000)
+    timer.unref?.()
+  }
 }
 
 function fromAnswer(answer) {
@@ -266,9 +357,14 @@ function resolveSettings(config) {
   const mode = typeof source.mode === 'string' && MODES.includes(source.mode) ? source.mode : 'balanced'
   const header = readText(source.header)
   const extra = readText(source.extraRule)
+  const bannerText = readText(source.bannerText)
+  const delay = Number(source.bannerDelayMs)
   return {
     mode,
     header: header === '' ? HEADER_DEFAULT : header,
     policy: extra === '' ? POLICIES[mode] : `${POLICIES[mode]}\n\n${extra}`,
+    waitBanner: source.waitBanner !== false,
+    bannerText: bannerText === '' ? '我还在等你回答' : bannerText,
+    bannerDelayMs: Number.isFinite(delay) && delay >= 0 ? Math.min(Math.round(delay), 60000) : 1200,
   }
 }
