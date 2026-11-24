@@ -9,7 +9,7 @@
 - **跳过和关掉是两件事**：跳过 = 别再问这个点，我按推荐项继续并说明用了这个假设；关掉卡片 = 你另有说法，我停下来在正文里问你这块要怎么做。
 - **三档提问频率**：平衡 / 严格 / 轻量，在「设置 → 不猜需求」里切换，下一轮对话立即生效。
 - **中英双语界面**，选择框里的问题和选项跟着你用的语言写。
-- **安装**：设置 → 插件 → 添加插件，填 `SillyMeo-1/dont-guess-ask`。
+- **安装**：设置 → 插件 → 添加插件，填 `https://github.com/SillyMeo-1/dont-guess-ask`。
 
 ### 已知限制
 
@@ -20,4 +20,4 @@ MIT License.
 
 ---
 
-First public release of the DeepSeek Harness plugin **Ask, don't guess**. When a requirement was never stated, it puts the readings I inferred into the composer's choice card instead of guessing and running ahead. Install from Settings → Plugins → Add plugin with `SillyMeo-1/dont-guess-ask`.
+First public release of the DeepSeek Harness plugin **Ask, don't guess**. When a requirement was never stated, it puts the readings I inferred into the composer's choice card instead of guessing and running ahead. Install from Settings → Plugins → Add plugin with `https://github.com/SillyMeo-1/dont-guess-ask`.

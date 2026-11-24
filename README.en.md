@@ -12,7 +12,7 @@ A DeepSeek Harness plugin that turns the requirement I inferred into a choice ca
 
 In DSH, open **Settings → Plugins → Add plugin**, then either:
 
-- enter the repository `SillyMeo-1/dont-guess-ask`, or
+- enter the repository URL `https://github.com/SillyMeo-1/dont-guess-ask`, or
 - clone this repository and point the dialog at that local directory
 
 After install, a row named 我不猜会问你 (`@local/dont-guess-ask`) appears, enabled by default.

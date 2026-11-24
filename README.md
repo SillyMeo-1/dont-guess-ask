@@ -12,7 +12,7 @@
 
 DSH 里打开 **设置 → 插件 → 添加插件**，任选一种：
 
-- 填 GitHub 仓库：`SillyMeo-1/dont-guess-ask`
+- 填仓库地址：`https://github.com/SillyMeo-1/dont-guess-ask`
 - 或者把这个仓库克隆到本地，再填那个目录的路径
 
 装好后插件列表里多一行「我不猜会问你」（`@local/dont-guess-ask`），默认开启。
