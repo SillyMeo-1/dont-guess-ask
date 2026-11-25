@@ -75,7 +75,7 @@ const RESULT_SCHEMA = {
   properties: {
     status: {
       type: 'string',
-      enum: ['picked', 'custom', 'skipped', 'cancelled', 'pending', 'delegated', 'unavailable', 'failed'],
+      enum: ['picked', 'custom', 'skipped', 'cancelled', 'none', 'pending', 'delegated', 'unavailable', 'failed'],
       description: 'How the ask ended: a chosen candidate, the user\'s own wording, a skip, a closed card, a delegated caller, no answer surface, or an error.',
     },
     picked: { type: 'array', items: { type: 'string' } },
@@ -419,7 +419,7 @@ function fromAnswer(answer) {
     : []
   if (custom !== '') return { status: 'custom', custom }
   if (picked.length > 0) {
-    if (picked.length === 1 && picked[0] === NONE_LABEL) return { status: 'cancelled' }
+    if (picked.length === 1 && picked[0] === NONE_LABEL) return { status: 'none' }
     return { status: 'picked', picked }
   }
   return { status: 'skipped' }
@@ -455,6 +455,10 @@ function describeResult(value) {
   if (status === 'cancelled') {
     return '用户关掉了选择框，没做选择——通常是他想自己说，或现在不想定这个。停下来，'
       + '用一句话在正文里问他这块要怎么做；不要按任何候选继续，也不要马上重开同一张卡。'
+  }
+  if (status === 'none') {
+    return '用户点了「都不是，我来说」但没写字：说明给的候选没覆盖他的想法。停下来，'
+      + '用一句话在正文里问他想要什么；不要按候选继续，也不要马上重开同一张卡。'
   }
   if (status === 'pending') {
     const seconds = Math.max(1, Math.round((Number(value.timeoutMs) || 120000) / 1000))
