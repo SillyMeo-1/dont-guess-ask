@@ -88,6 +88,7 @@ export function registerSettingsApi(ctx, pluginCtx, read) {
           mode: read.mode(),
           position: read.position(),
           pendingAsks: typeof read.pendingCount === 'function' ? read.pendingCount() : 0,
+          diagnostics: typeof read.diagnostics === 'function' ? read.diagnostics() : null,
         },
       })
       return

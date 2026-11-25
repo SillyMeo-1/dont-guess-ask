@@ -486,10 +486,11 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dont-guess-ask: dictionaries');
         const t = ctx.locale.bind(NS);
-        const workspace = ctx.get?.('uiWorkspace');
+        // Resolve the workspace service at call time: it may not exist yet when
+        // this plugin applies, and a captured `undefined` makes every jump a no-op.
         const openSession = (sessionId) => {
           try {
-            workspace?.openSession(sessionId);
+            ctx.get?.('uiWorkspace')?.openSession(sessionId);
           } catch {
             /* navigation is best effort */
           }

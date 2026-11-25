@@ -79,12 +79,19 @@ function Focus-Target {
 }
 
 function Send-Focus($sessionId) {
-    $host = [string]$state.apiHost
-    if ([string]::IsNullOrEmpty($host) -or [string]::IsNullOrEmpty([string]$sessionId)) { return }
+    # `$Host` is a read-only automatic variable, so the API base needs its own name.
+    $apiBase = [string]$state.apiHost
+    if ([string]::IsNullOrEmpty($apiBase) -or [string]::IsNullOrEmpty([string]$sessionId)) {
+        if ($script:logPath) { try { Add-Content -LiteralPath $script:logPath -Value "$(Get-Date -Format HH:mm:ss) focus skipped host=[$apiBase] sid=[$sessionId]" -Encoding UTF8 } catch { } }
+        return
+    }
     try {
         $payload = @{ sessionId = [string]$sessionId } | ConvertTo-Json -Compress
-        Invoke-RestMethod -Uri ("http://" + $host + "/dont-guess-api/focus") -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 3 | Out-Null
-    } catch { }
+        Invoke-RestMethod -Uri ("http://" + $apiBase + "/dont-guess-api/focus") -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 3 | Out-Null
+        if ($script:logPath) { try { Add-Content -LiteralPath $script:logPath -Value "$(Get-Date -Format HH:mm:ss) focus sent sid=[$sessionId]" -Encoding UTF8 } catch { } }
+    } catch {
+        if ($script:logPath) { try { Add-Content -LiteralPath $script:logPath -Value "$(Get-Date -Format HH:mm:ss) focus failed: $($_.Exception.Message)" -Encoding UTF8 } catch { } }
+    }
 }
 
 # --- window chrome: translucent light-red fading to transparent ---------------
@@ -132,8 +139,15 @@ function Update-Content($asks) {
     $stack.Children.Add($headline) | Out-Null
 
     foreach ($ask in $asks) {
+        # A TextBlock with no background is not reliably hit-testable, so the row
+        # is a transparent Border that owns the click.
+        $row = New-Object System.Windows.Controls.Border
+        $row.Background = [System.Windows.Media.Brushes]::Transparent
+        $row.Margin = New-Object System.Windows.Thickness(0, 4, 0, 0)
+        $row.Padding = New-Object System.Windows.Thickness(1, 2, 1, 2)
+        $row.Cursor = [System.Windows.Input.Cursors]::Hand
+
         $line = New-Object System.Windows.Controls.TextBlock
-        $line.Margin = New-Object System.Windows.Thickness(0, 4, 0, 0)
         $line.FontSize = 12
         $line.TextWrapping = [System.Windows.TextWrapping]::NoWrap
         $line.Foreground = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromArgb(255, 118, 32, 38))
@@ -142,10 +156,11 @@ function Update-Content($asks) {
         $title = [string]$ask.title
         if ([string]::IsNullOrEmpty($title)) { $line.Text = $question }
         else { $line.Text = ($question + '   ·   ' + $title) }
+        $row.Child = $line
+
         $sessionId = [string]$ask.sessionId
-        $line.Add_MouseLeftButtonDown({ param($s, $e) Send-Focus $sessionId; Focus-Target }.GetNewClosure())
-        $line.Cursor = [System.Windows.Input.Cursors]::Hand
-        $stack.Children.Add($line) | Out-Null
+        $row.Add_MouseLeftButtonDown({ param($s, $e) Send-Focus $sessionId; Focus-Target }.GetNewClosure())
+        $stack.Children.Add($row) | Out-Null
     }
 }
 
@@ -186,12 +201,14 @@ if ($poll -lt 200) { $poll = 200 }
 
 $tick = {
     if (Test-Path -LiteralPath ([string]$state.stopFile)) {
+        if ($script:logPath) { try { Add-Content -LiteralPath $script:logPath -Value "$(Get-Date -Format HH:mm:ss) stop-file seen; exiting" -Encoding UTF8 } catch { } }
         $timer.Stop(); $window.Close(); $app.Shutdown(); return
     }
 
     $alive = $false
     try { $alive = -not [System.Diagnostics.Process]::GetProcessById($dshPid).HasExited } catch { $alive = $false }
     if (-not $alive) {
+        if ($script:logPath) { try { Add-Content -LiteralPath $script:logPath -Value "$(Get-Date -Format HH:mm:ss) host-dead; exiting" -Encoding UTF8 } catch { } }
         $timer.Stop(); $window.Close(); $app.Shutdown(); return
     }
 
@@ -226,7 +243,7 @@ $tick = {
     $want = $need -and ($script:since -ne 0) -and (([Environment]::TickCount - $script:since) -ge [int]$fresh.delayMs)
 
     if ($script:logPath) {
-        $line = "$(Get-Date -Format HH:mm:ss) fg=$($foreground.ToInt64()) hwnd=$($hwnd.ToInt64()) min=$minimized sameSession=$sameSession need=$need want=$want asks=$($asks.Count) active=[$activeSession] title=[$title]"
+        $line = "$(Get-Date -Format HH:mm:ss) fg=$($foreground.ToInt64()) hwnd=$($hwnd.ToInt64()) min=$minimized sameSession=$sameSession need=$need want=$want shown=$($script:shown) vis=$($window.IsVisible) asks=$($asks.Count) active=[$activeSession] title=[$title]"
         if ($line -ne $script:lastLog) {
             try { Add-Content -LiteralPath $script:logPath -Value $line -Encoding UTF8 } catch { }
             $script:lastLog = $line

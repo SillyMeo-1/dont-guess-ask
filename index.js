@@ -114,6 +114,15 @@ export function apply(ctx, config = {}) {
         pendingCount: () => activeAsks.size,
         activeSession: (payload, host) => setActiveSession(payload, host),
         apiHost: host => learnApiHost(host),
+        diagnostics: () => ({
+          activeSession: {
+            id: activeSession.id,
+            focused: activeSession.focused,
+            visible: activeSession.visible,
+          },
+          bannerRunning: bannerChild !== undefined,
+          bannerPid: bannerChild?.pid ?? 0,
+        }),
         focus: {
           wait: timeoutMs => awaitFocus(timeoutMs),
           push: sessionId => pushFocus(sessionId),
@@ -280,6 +289,7 @@ function bannerPayload() {
   return {
     pid: process.pid,
     apiHost: bannerApiHost,
+    logFile: join(dirname(bannerPaths().state), 'banner.log'),
     position: pluginSettings?.bannerPosition ?? 'top-left',
     offsetX: pluginSettings?.bannerOffsetX ?? 0,
     offsetY: pluginSettings?.bannerOffsetY ?? 0,
@@ -299,6 +309,13 @@ function bannerPayload() {
 
 function writeBannerState() {
   const paths = bannerPaths()
+  // A stop file left by the previous ask would kill the next banner on its first
+  // tick, so clear it before publishing state for a fresh one.
+  try {
+    rmSync(paths.stop, { force: true })
+  } catch {
+    // Best effort.
+  }
   writeFileSync(paths.state, JSON.stringify(bannerPayload()), 'utf8')
 }
 
