@@ -1,6 +1,6 @@
 {
   "name": "@local/dont-guess-ask",
-  "version": "1.6.1",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
   "description": "我是大肥鱼：以前你丢一句话我就替你把没说的地方补齐，补着补着就跑偏；现在先问「我猜你是要 A 还是 B」，你挑一个我再动手。",
