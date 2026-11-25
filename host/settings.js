@@ -109,6 +109,10 @@ export function registerSettingsApi(ctx, pluginCtx, read) {
     }
 
     if (req.method === 'POST' && path === '/focus') {
+      if (!sameOrigin(req)) {
+        fail(res, 403, '拒绝跨站跳转')
+        return
+      }
       const body = await readJson(req)
       const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
       if (sessionId !== '' && typeof read.focus?.push === 'function') read.focus.push(sessionId)
