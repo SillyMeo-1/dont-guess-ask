@@ -1,11 +1,8 @@
-param(
-    [Parameter(Mandatory = $true)][string]$ParamsPath
+﻿param(
+    [Parameter(Mandatory = $true)][string]$StatePath
 )
 
 $ErrorActionPreference = 'Stop'
-
-$raw = [System.IO.File]::ReadAllText($ParamsPath, [System.Text.Encoding]::UTF8)
-$p = $raw | ConvertFrom-Json
 
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
@@ -50,10 +47,21 @@ public static class AskWin
 }
 '@
 
-$target = $null
-try { $target = [System.Diagnostics.Process]::GetProcessById([int]$p.pid) } catch { }
+function Read-State {
+    try {
+        $text = [System.IO.File]::ReadAllText($StatePath, [System.Text.Encoding]::UTF8)
+        return ($text | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+$state = Read-State
+if ($null -eq $state) { exit 0 }
+
+$dshPid = [int]$state.pid
 $hwnd = [IntPtr]::Zero
-if ($null -ne $target) { $hwnd = $target.MainWindowHandle }
+try { $hwnd = [System.Diagnostics.Process]::GetProcessById($dshPid).MainWindowHandle } catch { }
 if ($hwnd -eq [IntPtr]::Zero) { $hwnd = [AskWin]::FindWindowByTitle('DeepSeek Harness') }
 if ($hwnd -eq [IntPtr]::Zero) { exit 0 }
 
@@ -66,17 +74,26 @@ function Get-WindowTitle([IntPtr]$handle) {
 
 function Focus-Target {
     if ($hwnd -eq [IntPtr]::Zero) { return }
-    if ([AskWin]::IsIconic($hwnd)) { [void][AskWin]::ShowWindow($hwnd, 9) }  # SW_RESTORE
+    if ([AskWin]::IsIconic($hwnd)) { [void][AskWin]::ShowWindow($hwnd, 9) }
     [void][AskWin]::SetForegroundWindow($hwnd)
 }
 
-# --- translucent light-red to transparent gradient ---------------------------
+function Send-Focus($sessionId) {
+    $host = [string]$state.apiHost
+    if ([string]::IsNullOrEmpty($host) -or [string]::IsNullOrEmpty([string]$sessionId)) { return }
+    try {
+        $payload = @{ sessionId = [string]$sessionId } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri ("http://" + $host + "/dont-guess-api/focus") -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 3 | Out-Null
+    } catch { }
+}
+
+# --- window chrome: translucent light-red fading to transparent ---------------
 $gradient = New-Object System.Windows.Media.LinearGradientBrush
 $gradient.StartPoint = New-Object System.Windows.Point(0, 0)
 $gradient.EndPoint = New-Object System.Windows.Point(1, 0)
 $gradient.GradientStops.Add((New-Object System.Windows.Media.GradientStop ([System.Windows.Media.Color]::FromArgb(214, 255, 128, 128)), 0.0))
-$gradient.GradientStops.Add((New-Object System.Windows.Media.GradientStop ([System.Windows.Media.Color]::FromArgb(186, 255, 146, 146)), 0.45))
-$gradient.GradientStops.Add((New-Object System.Windows.Media.GradientStop ([System.Windows.Media.Color]::FromArgb(70, 255, 170, 170)), 0.78))
+$gradient.GradientStops.Add((New-Object System.Windows.Media.GradientStop ([System.Windows.Media.Color]::FromArgb(204, 255, 138, 138)), 0.62))
+$gradient.GradientStops.Add((New-Object System.Windows.Media.GradientStop ([System.Windows.Media.Color]::FromArgb(96, 255, 160, 160)), 0.86))
 $gradient.GradientStops.Add((New-Object System.Windows.Media.GradientStop ([System.Windows.Media.Color]::FromArgb(0, 255, 190, 190)), 1.0))
 
 $border = New-Object System.Windows.Controls.Border
@@ -84,24 +101,9 @@ $border.Background = $gradient
 $border.CornerRadius = New-Object System.Windows.CornerRadius(10)
 $border.BorderThickness = New-Object System.Windows.Thickness(1)
 $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromArgb(90, 255, 255, 255))
-$border.Padding = New-Object System.Windows.Thickness(18, 11, 26, 11)
+$border.Padding = New-Object System.Windows.Thickness(18, 11, 28, 11)
 
 $stack = New-Object System.Windows.Controls.StackPanel
-
-$headline = New-Object System.Windows.Controls.TextBlock
-$headline.Text = [string]$p.text
-$headline.FontSize = 15
-$headline.FontWeight = [System.Windows.FontWeights]::SemiBold
-$headline.Foreground = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromArgb(255, 96, 16, 22))
-
-$sub = New-Object System.Windows.Controls.TextBlock
-$sub.Text = [string]$p.subtext
-$sub.FontSize = 12
-$sub.Margin = New-Object System.Windows.Thickness(0, 3, 0, 0)
-$sub.Foreground = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromArgb(255, 128, 40, 44))
-
-$stack.Children.Add($headline) | Out-Null
-if (-not [string]::IsNullOrWhiteSpace([string]$p.subtext)) { $stack.Children.Add($sub) | Out-Null }
 $border.Child = $stack
 
 $window = New-Object System.Windows.Window
@@ -119,107 +121,125 @@ $window.Content = $border
 $border.Add_MouseLeftButtonDown({ Focus-Target })
 $window.Add_MouseLeftButtonDown({ Focus-Target })
 
+function Update-Content($asks) {
+    $stack.Children.Clear()
+
+    $headline = New-Object System.Windows.Controls.TextBlock
+    $headline.Text = [string]$state.text
+    $headline.FontSize = 15
+    $headline.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $headline.Foreground = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromArgb(255, 96, 16, 22))
+    $stack.Children.Add($headline) | Out-Null
+
+    foreach ($ask in $asks) {
+        $line = New-Object System.Windows.Controls.TextBlock
+        $line.Margin = New-Object System.Windows.Thickness(0, 4, 0, 0)
+        $line.FontSize = 12
+        $line.TextWrapping = [System.Windows.TextWrapping]::NoWrap
+        $line.Foreground = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromArgb(255, 118, 32, 38))
+        $question = [string]$ask.question
+        if ($question.Length -gt 34) { $question = $question.Substring(0, 34) + '…' }
+        $title = [string]$ask.title
+        if ([string]::IsNullOrEmpty($title)) { $line.Text = $question }
+        else { $line.Text = ($question + '   ·   ' + $title) }
+        $sessionId = [string]$ask.sessionId
+        $line.Add_MouseLeftButtonDown({ param($s, $e) Send-Focus $sessionId; Focus-Target }.GetNewClosure())
+        $line.Cursor = [System.Windows.Input.Cursors]::Hand
+        $stack.Children.Add($line) | Out-Null
+    }
+}
+
 function Get-BannerPosition {
     $area = [System.Windows.SystemParameters]::WorkArea
     $width = $window.ActualWidth
     $height = $window.ActualHeight
-    $offsetX = [double]$p.offsetX
-    $offsetY = [double]$p.offsetY
-    $where = [string]$p.position
+    $offsetX = [double]$state.offsetX
+    $offsetY = [double]$state.offsetY
+    $where = [string]$state.position
     if ([string]::IsNullOrWhiteSpace($where)) { $where = 'top-left' }
 
     $left = $area.Left + 16 + $offsetX
     $top = $area.Top + 12 + $offsetY
 
     switch ($where) {
-        'top-center' {
-            $left = $area.Left + (($area.Width - $width) / 2) + $offsetX
-            $top = $area.Top + 12 + $offsetY
-        }
-        'top-right' {
-            $left = $area.Right - $width - 16 + $offsetX
-            $top = $area.Top + 12 + $offsetY
-        }
-        'bottom-left' {
-            $left = $area.Left + 16 + $offsetX
-            $top = $area.Bottom - $height - 16 + $offsetY
-        }
-        'bottom-center' {
-            $left = $area.Left + (($area.Width - $width) / 2) + $offsetX
-            $top = $area.Bottom - $height - 16 + $offsetY
-        }
-        'bottom-right' {
-            $left = $area.Right - $width - 16 + $offsetX
-            $top = $area.Bottom - $height - 16 + $offsetY
-        }
-        default {
-            $left = $area.Left + 16 + $offsetX
-            $top = $area.Top + 12 + $offsetY
-        }
+        'top-center' { $left = $area.Left + (($area.Width - $width) / 2) + $offsetX; $top = $area.Top + 12 + $offsetY }
+        'top-right' { $left = $area.Right - $width - 16 + $offsetX; $top = $area.Top + 12 + $offsetY }
+        'bottom-left' { $left = $area.Left + 16 + $offsetX; $top = $area.Bottom - $height - 16 + $offsetY }
+        'bottom-center' { $left = $area.Left + (($area.Width - $width) / 2) + $offsetX; $top = $area.Bottom - $height - 16 + $offsetY }
+        'bottom-right' { $left = $area.Right - $width - 16 + $offsetX; $top = $area.Bottom - $height - 16 + $offsetY }
     }
 
     $window.Left = [double]$left
     $window.Top = [double]$top
 }
 
-$delay = [int]$p.delayMs
-$poll = [int]$p.pollMs
-if ($poll -lt 200) { $poll = 200 }
-$logPath = [string]$p.logFile
-$lastLog = ''
-
 $app = New-Object System.Windows.Application
 $app.ShutdownMode = [System.Windows.ShutdownMode]::OnExplicitShutdown
 
 $script:shown = $false
 $script:since = 0
+$script:signature = ''
+$script:logPath = [string]$state.logFile
 $script:lastLog = ''
+$poll = [int]$state.pollMs
+if ($poll -lt 200) { $poll = 200 }
 
 $tick = {
-    if (Test-Path -LiteralPath ([string]$p.stopFile)) {
-        $timer.Stop()
-        $window.Close()
-        $app.Shutdown()
-        return
+    if (Test-Path -LiteralPath ([string]$state.stopFile)) {
+        $timer.Stop(); $window.Close(); $app.Shutdown(); return
     }
 
     $alive = $false
-    try { $alive = -not [System.Diagnostics.Process]::GetProcessById([int]$p.pid).HasExited } catch { $alive = $false }
+    try { $alive = -not [System.Diagnostics.Process]::GetProcessById($dshPid).HasExited } catch { $alive = $false }
     if (-not $alive) {
-        $timer.Stop()
-        $window.Close()
-        $app.Shutdown()
+        $timer.Stop(); $window.Close(); $app.Shutdown(); return
+    }
+
+    $fresh = Read-State
+    if ($null -eq $fresh) { return }
+    $script:state = $fresh
+    $asks = @($fresh.asks)
+    if ($asks.Count -eq 0) {
+        if ($script:shown) { $window.Hide(); $script:shown = $false }
+        $script:since = 0
         return
     }
 
     $foreground = [AskWin]::GetForegroundWindow()
     $minimized = ($hwnd -ne [IntPtr]::Zero) -and [AskWin]::IsIconic($hwnd)
     $title = Get-WindowTitle $hwnd
+    $activeSession = [string]$fresh.activeSessionId
 
-    $sameSession = $true
-    if (-not [string]::IsNullOrEmpty([string]$p.titleMatch)) {
-        $sameSession = $title.IndexOf([string]$p.titleMatch, [System.StringComparison]::Ordinal) -ge 0
+    $sameSession = $false
+    if (-not [string]::IsNullOrEmpty($activeSession)) {
+        foreach ($ask in $asks) {
+            if ([string]$ask.sessionId -eq $activeSession) { $sameSession = $true; break }
+        }
+    } elseif ($asks.Count -eq 1 -and -not [string]::IsNullOrEmpty([string]$asks[0].title)) {
+        $sameSession = $title.IndexOf([string]$asks[0].title, [System.StringComparison]::Ordinal) -ge 0
     }
 
     $need = $minimized -or ($foreground -ne $hwnd) -or (-not $sameSession)
-    if ($need) {
-        if ($script:since -eq 0) { $script:since = [Environment]::TickCount }
-    } else {
-        $script:since = 0
-    }
+    if ($need) { if ($script:since -eq 0) { $script:since = [Environment]::TickCount } }
+    else { $script:since = 0 }
 
-    $want = $need -and ($script:since -ne 0) -and (([Environment]::TickCount - $script:since) -ge $delay)
+    $want = $need -and ($script:since -ne 0) -and (([Environment]::TickCount - $script:since) -ge [int]$fresh.delayMs)
 
-    if ($logPath) {
-        $line = "$(Get-Date -Format HH:mm:ss) fg=$($foreground.ToInt64()) hwnd=$($hwnd.ToInt64()) min=$minimized same=$sameSession need=$need want=$want pos=$([string]$p.position) title=[$title]"
+    if ($script:logPath) {
+        $line = "$(Get-Date -Format HH:mm:ss) fg=$($foreground.ToInt64()) hwnd=$($hwnd.ToInt64()) min=$minimized sameSession=$sameSession need=$need want=$want asks=$($asks.Count) active=[$activeSession] title=[$title]"
         if ($line -ne $script:lastLog) {
-            try { Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8 } catch { }
+            try { Add-Content -LiteralPath $script:logPath -Value $line -Encoding UTF8 } catch { }
             $script:lastLog = $line
         }
     }
 
     if ($want -ne $script:shown) {
         if ($want) {
+            $signature = ($asks | ForEach-Object { [string]$_.sessionId + '|' + [string]$_.question }) -join '||'
+            if ($signature -ne $script:signature) {
+                Update-Content $asks
+                $script:signature = $signature
+            }
             if (-not $window.IsVisible) { $window.Show() }
             Get-BannerPosition
             $window.Topmost = $true

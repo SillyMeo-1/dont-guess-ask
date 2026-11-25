@@ -21,7 +21,7 @@ After install, a row named 我不猜会问你 (`@local/dont-guess-ask`) appears,
 
 - When I'm about to act on a reading you never stated, the composer shows a choice card: one question, the requirement I guessed, and 2–5 candidate readings with my recommendation first.
 - Pick one and I do that; the other candidates are dropped, and I won't ask the same point twice.
-- You can also type your own answer to override every candidate.
+- You can also type your own answer to override every candidate; each card ends with a fixed 「都不是，我来说」 — picking it without typing tells me to stop and ask in plain text.
 - **Skip** means "stop asking about this": I proceed with the recommended option and say in one line that I assumed it.
 - **Closing the card** means you have something else to say: I stop, ask you in plain text how that part should work, and do not proceed with any candidate.
 - Switch to another session, reload the page, or close and reopen the window while DSH keeps running, and the unanswered question is kept — come back to that session and it is still there.
@@ -44,7 +44,9 @@ While a question is waiting and you are not looking at the session that asked it
 - DSH is covered by another window (it is not the foreground window);
 - the window is showing a different session (judged by the window title).
 
-It stays hidden while you are looking at the asking session, and folds away the moment you return. A 1.2 s delay keeps it from flashing on a momentary switch.
+It stays hidden while you are looking at the asking session, and folds away the moment you return. A 1.2 s delay keeps it from flashing on a momentary switch. Several waiting questions share one banner, one line each; clicking a line opens that session.
+
+**Waiting is bounded**: the card waits 120 seconds by default, then I continue with the first candidate, say so in the reply, and the card closes. `0` waits forever.
 
 Pick the corner in **Settings → Ask first** (top-left / top-centre / top-right / bottom-left / bottom-centre / bottom-right), or set it in config:
 
@@ -56,6 +58,7 @@ Pick the corner in **Settings → Ask first** (top-left / top-centre / top-right
 | `bannerOffsetY` | `0` | nudge the anchor vertically, in pixels |
 | `bannerDelayMs` | `1200` | how long the condition must hold before it appears |
 | `bannerText` | 我还在等你回答 | the banner's headline |
+| `askTimeoutMs` | `120000` | how long one question waits, in milliseconds; `0` waits forever |
 
 ## Try it
 
@@ -63,7 +66,7 @@ Say "use dont_guess_ask to ask me whether to run tests first or update the docs"
 
 ## Settings: how often to ask
 
-**Settings → Ask first** has three levels; a change applies to the next turn:
+**Settings → Ask first** has three levels; a change applies to the next turn. While a question is waiting, saving a setting is refused — answer it first.
 
 | Level | When I ask |
 |---|---|

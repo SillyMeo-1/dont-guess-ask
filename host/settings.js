@@ -1,10 +1,7 @@
 /**
- * Settings API for the plugin's own profile row.
- *
- * The settings page picks the policy mode and where the waiting banner sits.
- * Both writes go through the profile's config editor: it persists an override
- * row in the profile patch and reloads this plugin, so the change applies to the
- * next question.
+ * Settings API for the plugin's own profile row, plus the two channels the
+ * waiting banner needs: which session the page is showing, and which session the
+ * banner asked to open.
  */
 
 const PREFIX = '/dont-guess-api'
@@ -75,41 +72,75 @@ function sameOrigin(req) {
  * Register `/dont-guess-api` on the composition's web server.
  * @param ctx context that has `webServer`
  * @param pluginCtx the plugin's own context, whose fiber owns the profile row
- * @param read live settings: `mode()` and `position()`
+ * @param read live settings and channels; every member is optional
  * @returns the route disposer
  */
 export function registerSettingsApi(ctx, pluginCtx, read) {
   const handle = async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const path = url.pathname.slice(PREFIX.length) || '/'
+    if (typeof read.apiHost === 'function') read.apiHost(req.headers.host)
+
     if (req.method === 'GET' && path === '/state') {
-      sendJson(res, 200, { ok: true, data: { mode: read.mode(), position: read.position() } })
+      sendJson(res, 200, {
+        ok: true,
+        data: {
+          mode: read.mode(),
+          position: read.position(),
+          pendingAsks: typeof read.pendingCount === 'function' ? read.pendingCount() : 0,
+        },
+      })
       return
     }
-    if (req.method === 'POST' && path === '/mode') {
+
+    if (req.method === 'POST' && path === '/active') {
+      const body = await readJson(req)
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
+      if (sessionId === '') throw httpError('缺少 sessionId', 400)
+      if (typeof read.activeSession === 'function') read.activeSession(sessionId, req.headers.host)
+      sendJson(res, 200, { ok: true, data: { sessionId } })
+      return
+    }
+
+    if (req.method === 'GET' && path === '/focus') {
+      const sessionId = typeof read.focus?.wait === 'function' ? await read.focus.wait(20000) : ''
+      sendJson(res, 200, { ok: true, data: { sessionId } })
+      return
+    }
+
+    if (req.method === 'POST' && path === '/focus') {
+      const body = await readJson(req)
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
+      if (sessionId !== '' && typeof read.focus?.push === 'function') read.focus.push(sessionId)
+      sendJson(res, 200, { ok: true, data: { sessionId } })
+      return
+    }
+
+    if (req.method === 'POST' && (path === '/mode' || path === '/position')) {
       if (!sameOrigin(req)) {
         fail(res, 403, '拒绝跨站修改配置')
         return
       }
-      const body = await readJson(req)
-      const mode = typeof body.mode === 'string' ? body.mode : ''
-      if (!MODES.includes(mode)) throw httpError(`未知的提问频率：${mode || '（空）'}`, 400)
-      await writeConfig(pluginCtx, { mode })
-      sendJson(res, 200, { ok: true, data: { mode, position: read.position() } })
-      return
-    }
-    if (req.method === 'POST' && path === '/position') {
-      if (!sameOrigin(req)) {
-        fail(res, 403, '拒绝跨站修改配置')
+      const pending = typeof read.pendingCount === 'function' ? read.pendingCount() : 0
+      if (pending > 0) {
+        fail(res, 409, `还有 ${pending} 个问题在等回答，先答完再改设置`)
         return
       }
       const body = await readJson(req)
+      if (path === '/mode') {
+        const mode = typeof body.mode === 'string' ? body.mode : ''
+        if (!MODES.includes(mode)) throw httpError(`未知的提问频率：${mode || '（空）'}`, 400)
+        await writeConfig(pluginCtx, { mode })
+        sendJson(res, 200, { ok: true, data: { mode, position: read.position() } })
+        return
+      }
       const position = typeof body.position === 'string' ? body.position : ''
       if (!POSITIONS.includes(position)) throw httpError(`未知的横幅位置：${position || '（空）'}`, 400)
       await writeConfig(pluginCtx, { bannerPosition: position })
       sendJson(res, 200, { ok: true, data: { mode: read.mode(), position } })
       return
     }
+
     fail(res, 404, '未知接口')
   }
   return ctx.webServer.register({

@@ -414,6 +414,58 @@ window.__ModuleLoader__.load({
     }
 
     /* -------------------------------------------------------------- */
+    /* Session beacon                                                 */
+    /* -------------------------------------------------------------- */
+
+    /**
+     * Reports the session this window is showing, and collects a session the
+     * waiting banner asked to open. Renders nothing.
+     */
+    function SessionBeacon({ sessionId, openSession }) {
+      useEffect(() => {
+        if (typeof sessionId !== 'string' || sessionId === '') return undefined;
+        const controller = new AbortController();
+        fetch(API + '/active', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sessionId }),
+          signal: controller.signal,
+          keepalive: true,
+        }).catch(() => {});
+        return () => controller.abort();
+      }, [sessionId]);
+
+      useEffect(() => {
+        let cancelled = false;
+        let timer = null;
+        const poll = async () => {
+          try {
+            const response = await fetch(API + '/focus', {
+              credentials: 'same-origin',
+              headers: { accept: 'application/json' },
+            });
+            const payload = await response.json();
+            const target = payload && payload.data ? payload.data.sessionId : '';
+            if (!cancelled && typeof target === 'string' && target !== '' && typeof openSession === 'function') {
+              openSession(target);
+            }
+          } catch {
+            /* the next round retries */
+          }
+          if (!cancelled) timer = setTimeout(poll, 1200);
+        };
+        poll();
+        return () => {
+          cancelled = true;
+          if (timer !== null) clearTimeout(timer);
+        };
+      }, [openSession]);
+
+      return null;
+    }
+
+    /* -------------------------------------------------------------- */
     /* Plugin                                                         */
     /* -------------------------------------------------------------- */
 
@@ -422,6 +474,20 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dont-guess-ask: dictionaries');
         const t = ctx.locale.bind(NS);
+        const workspace = ctx.get?.('uiWorkspace');
+        const openSession = (sessionId) => {
+          try {
+            workspace?.openSession(sessionId);
+          } catch {
+            /* navigation is best effort */
+          }
+        };
+
+        ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+          name: 'conversation.composer.dock',
+          id: 'dont-guess-ask-beacon',
+          order: 900,
+        }, (owner = {}) => h(SessionBeacon, { sessionId: owner.sessionId, openSession })));
 
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',

@@ -75,18 +75,20 @@ const RESULT_SCHEMA = {
   properties: {
     status: {
       type: 'string',
-      enum: ['picked', 'custom', 'skipped', 'cancelled', 'delegated', 'unavailable', 'failed'],
+      enum: ['picked', 'custom', 'skipped', 'cancelled', 'pending', 'delegated', 'unavailable', 'failed'],
       description: 'How the ask ended: a chosen candidate, the user\'s own wording, a skip, a closed card, a delegated caller, no answer surface, or an error.',
     },
     picked: { type: 'array', items: { type: 'string' } },
     custom: { type: 'string' },
     reason: { type: 'string' },
+    timeoutMs: { type: 'number' },
   },
 }
 
 /** Register the policy section, the tool, and the settings route. */
 export function apply(ctx, config = {}) {
   const settings = resolveSettings(config)
+  pluginSettings = settings
   if (isRecord(config) && typeof config.mode === 'string' && config.mode !== '' && !MODES.includes(config.mode)) {
     ctx.logger?.warn?.(`dont-guess-ask: 未知的提问频率 "${config.mode}"，已按 balanced 处理`)
   }
@@ -109,6 +111,13 @@ export function apply(ctx, config = {}) {
       () => registerSettingsApi(webCtx, ctx, {
         mode: () => settings.mode,
         position: () => settings.bannerPosition,
+        pendingCount: () => activeAsks.size,
+        activeSession: (sessionId, host) => setActiveSession(sessionId, host),
+        apiHost: host => learnApiHost(host),
+        focus: {
+          wait: timeoutMs => awaitFocus(timeoutMs),
+          push: sessionId => pushFocus(sessionId),
+        },
       }),
       'dont-guess-ask: settings api',
     )
@@ -171,29 +180,41 @@ async function run(ctx, settings, args, exec) {
   if (options.length < 2) throw new Error('options 少于 2 个：把用户可能想要的另一种理解也列出来。')
   if (options.length > 5) throw new Error('options 超过 5 个：只留最可能的 5 个，推荐项排第一。')
 
-  const stopBanner = startWaitBanner(ctx, exec, settings)
+  // The card always ends with one fixed option: a bare pick means "stop, I will
+  // say it myself", and typed text still overrides every label.
+  const offered = [...options, { label: NONE_LABEL, description: '先停一下，我把自己的说法补上。' }]
+
+  const askId = registerAsk(ctx, exec, settings, question)
   let answer
   try {
-    answer = await ctx.userQuestions.ask({
+    const request = {
       questions: [{
         id: QUESTION_ID,
         question,
         header: settings.header,
         ...guess === '' ? {} : { detail: guess },
-        options,
+        options: offered,
       }],
       ...exec.agent === undefined ? {} : { agent: exec.agent },
       signal: exec.signal,
-    })
+    }
+    const timed = settings.askTimeoutMs > 0 && exec.agent !== undefined && exec.callId !== undefined
+    if (timed) {
+      const result = await ctx.userQuestions.askTimed(request, exec.callId, settings.askTimeoutMs)
+      if (isRecord(result) && result.pending === true) return { status: 'pending', timeoutMs: settings.askTimeoutMs }
+      answer = result
+    } else {
+      answer = await ctx.userQuestions.ask(request)
+    }
   } catch (error) {
     return fromFailure(error, exec.signal)
   } finally {
-    stopBanner?.()
+    unregisterAsk(askId)
   }
   return fromAnswer(answer)
 }
 
-/** Path of the WinForms banner that marks a question waiting outside the app. */
+/** Path of the WinForms banner that marks questions waiting outside the app. */
 function bannerScript() {
   return join(dirname(fileURLToPath(import.meta.url)), 'host', 'wait-banner.ps1')
 }
@@ -212,71 +233,180 @@ function sessionTitleOf(ctx, exec) {
   }
 }
 
-/**
- * Raise a top-of-screen banner while the question waits and the person is not
- * looking at this session: the app is minimized, behind another window, or its
- * window title names a different session. The banner never takes focus, and a
- * click brings the app forward. Best effort: a failed banner never fails the ask.
- * @returns a disposer, or undefined when the banner is disabled or unavailable.
- */
-function startWaitBanner(ctx, exec, settings) {
-  if (settings.waitBanner === false) return undefined
-  const title = sessionTitleOf(ctx, exec)
+/** Fixed last option offered on every card. */
+const NONE_LABEL = '都不是，我来说'
+
+/** Asks currently waiting for an answer, keyed by a short id. */
+const activeAsks = new Map()
+
+/** Session the browser last reported as the one on screen. */
+let activeSessionId = ''
+
+/** `host:port` the page reached the plugin API on, learned from the last beacon. */
+let bannerApiHost = ''
+
+/** A session the banner asked us to open, waiting for the page to collect it. */
+let pendingFocus = ''
+let focusWaiter
+
+let bannerChild
+let bannerStatePath = ''
+let bannerStopPath = ''
+let pluginSettings
+
+/** Scratch paths shared by every banner process of this Host. */
+function bannerPaths() {
+  if (bannerStatePath !== '') return { state: bannerStatePath, stop: bannerStopPath }
   const directory = join(tmpdir(), 'dsh-wait-ask')
-  let paramsPath
-  let stopPath
-  let child
+  mkdirSync(directory, { recursive: true })
+  const token = `${process.pid.toString(36)}-${Date.now().toString(36)}`
+  bannerStatePath = join(directory, `state-${token}.json`)
+  bannerStopPath = join(directory, `stop-${token}.txt`)
+  return { state: bannerStatePath, stop: bannerStopPath }
+}
+
+/** The file the banner polls: every waiting ask plus where to draw. */
+function bannerPayload() {
+  return {
+    pid: process.pid,
+    apiHost: bannerApiHost,
+    position: pluginSettings?.bannerPosition ?? 'top-left',
+    offsetX: pluginSettings?.bannerOffsetX ?? 0,
+    offsetY: pluginSettings?.bannerOffsetY ?? 0,
+    text: pluginSettings?.bannerText ?? '我还在等你回答',
+    delayMs: pluginSettings?.bannerDelayMs ?? 1200,
+    pollMs: 600,
+    stopFile: bannerPaths().stop,
+    activeSessionId,
+    asks: [...activeAsks.values()].map(ask => ({
+      id: ask.id,
+      sessionId: ask.sessionId,
+      title: ask.title,
+      question: ask.question,
+    })),
+  }
+}
+
+function writeBannerState() {
+  const paths = bannerPaths()
+  writeFileSync(paths.state, JSON.stringify(bannerPayload()), 'utf8')
+}
+
+function startBannerProcess() {
+  if (bannerChild !== undefined) return
   try {
-    mkdirSync(directory, { recursive: true })
-    const token = `${Date.now().toString(36)}-${process.pid.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-    paramsPath = join(directory, `params-${token}.json`)
-    stopPath = join(directory, `stop-${token}.txt`)
-    writeFileSync(paramsPath, JSON.stringify({
-      pid: process.pid,
-      titleMatch: title,
-      text: settings.bannerText,
-      subtext: title === '' ? '点这里回到 DSH' : `会话：${title}`,
-      stopFile: stopPath,
-      delayMs: settings.bannerDelayMs,
-      pollMs: 600,
-      position: settings.bannerPosition,
-      offsetX: settings.bannerOffsetX,
-      offsetY: settings.bannerOffsetY,
-    }), 'utf8')
-    child = spawn('powershell.exe', [
+    const child = spawn('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-WindowStyle', 'Hidden', '-File', bannerScript(), '-ParamsPath', paramsPath,
+      '-WindowStyle', 'Hidden', '-File', bannerScript(), '-StatePath', bannerPaths().state,
     ], { stdio: 'ignore', windowsHide: true })
     child.on('error', () => undefined)
+    child.on('close', () => {
+      if (bannerChild === child) bannerChild = undefined
+    })
     child.unref()
+    bannerChild = child
   } catch {
-    return undefined
+    // The banner is best effort: losing it never fails the question.
   }
-  let stopped = false
-  return () => {
-    if (stopped) return
-    stopped = true
+}
+
+function stopBannerProcess() {
+  const child = bannerChild
+  bannerChild = undefined
+  if (child === undefined) return
+  try {
+    writeFileSync(bannerPaths().stop, 'stop', 'utf8')
+  } catch {
+    // The kill below is the authoritative stop.
+  }
+  const timer = setTimeout(() => {
     try {
-      writeFileSync(stopPath, 'stop', 'utf8')
+      child.kill()
     } catch {
-      // The kill below is the authoritative stop.
+      // Already gone.
     }
-    const timer = setTimeout(() => {
-      try {
-        child.kill()
-      } catch {
-        // Already gone.
-      }
-      for (const file of [paramsPath, stopPath]) {
-        try {
-          rmSync(file, { force: true })
-        } catch {
-          // Best effort.
-        }
-      }
-    }, 2000)
-    timer.unref?.()
+  }, 2000)
+  timer.unref?.()
+}
+
+/** Rewrite the banner's state file and start or stop its one process to match. */
+function syncBanner() {
+  if (pluginSettings === undefined || pluginSettings.waitBanner === false) return
+  if (process.platform !== 'win32') return
+  try {
+    writeBannerState()
+    if (activeAsks.size === 0) stopBannerProcess()
+    else startBannerProcess()
+  } catch {
+    // Best effort.
   }
+}
+
+function registerAsk(ctx, exec, settings, question) {
+  pluginSettings = settings
+  const id = `ask-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+  activeAsks.set(id, {
+    id,
+    sessionId: exec?.agent?.session?.header?.id ?? '',
+    title: sessionTitleOf(ctx, exec),
+    question,
+  })
+  syncBanner()
+  return id
+}
+
+function unregisterAsk(id) {
+  activeAsks.delete(id)
+  syncBanner()
+}
+
+/** The page reports the session on screen, so the banner can tell "looking at it". */
+function setActiveSession(sessionId, host) {
+  if (typeof host === 'string' && host !== '' && host !== bannerApiHost) bannerApiHost = host
+  if (sessionId === activeSessionId) return
+  activeSessionId = sessionId
+  syncBanner()
+}
+
+function learnApiHost(host) {
+  if (typeof host !== 'string' || host === '' || host === bannerApiHost) return
+  bannerApiHost = host
+  syncBanner()
+}
+
+/** The banner asked to open one session; the page collects it by long-polling. */
+function pushFocus(sessionId) {
+  pendingFocus = sessionId
+  const waiter = focusWaiter
+  focusWaiter = undefined
+  waiter?.()
+}
+
+/** Resolve with a pushed session id as soon as it arrives, or '' on timeout. */
+function awaitFocus(timeoutMs) {
+  if (pendingFocus !== '') {
+    const value = pendingFocus
+    pendingFocus = ''
+    return Promise.resolve(value)
+  }
+  return new Promise(resolve => {
+    let settled = false
+    const finish = value => {
+      if (settled) return
+      settled = true
+      if (focusWaiter === waiter) focusWaiter = undefined
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish(''), Math.max(1000, Math.min(timeoutMs, 60000)))
+    timer.unref?.()
+    function waiter() {
+      clearTimeout(timer)
+      const value = pendingFocus
+      pendingFocus = ''
+      finish(value)
+    }
+    focusWaiter = waiter
+  })
 }
 
 function fromAnswer(answer) {
@@ -288,7 +418,10 @@ function fromAnswer(answer) {
     ? item.selected.filter(label => typeof label === 'string' && label !== '')
     : []
   if (custom !== '') return { status: 'custom', custom }
-  if (picked.length > 0) return { status: 'picked', picked }
+  if (picked.length > 0) {
+    if (picked.length === 1 && picked[0] === NONE_LABEL) return { status: 'cancelled' }
+    return { status: 'picked', picked }
+  }
   return { status: 'skipped' }
 }
 
@@ -322,6 +455,11 @@ function describeResult(value) {
   if (status === 'cancelled') {
     return '用户关掉了选择框，没做选择——通常是他想自己说，或现在不想定这个。停下来，'
       + '用一句话在正文里问他这块要怎么做；不要按任何候选继续，也不要马上重开同一张卡。'
+  }
+  if (status === 'pending') {
+    const seconds = Math.max(1, Math.round((Number(value.timeoutMs) || 120000) / 1000))
+    return `等了 ${seconds} 秒没等到你回答，我先按第一个候选继续。这个点先按我的假设做，`
+      + '做完在回复里用一句话说明；你回来看到不对，直接说，我改。'
   }
   if (status === 'delegated') {
     return '子代理不能直接弹选择框。先用第一个候选把其余能做的做完，然后在最终结果里单列「待确认：…（我暂按 X）」'
@@ -379,5 +517,8 @@ function resolveSettings(config) {
       : 'top-left',
     bannerOffsetX: Number.isFinite(offsetX) ? Math.round(offsetX) : 0,
     bannerOffsetY: Number.isFinite(offsetY) ? Math.round(offsetY) : 0,
+    askTimeoutMs: Number.isFinite(Number(source.askTimeoutMs)) && Number(source.askTimeoutMs) >= 0
+      ? Math.min(Math.round(Number(source.askTimeoutMs)), 3600000)
+      : 120000,
   }
 }
