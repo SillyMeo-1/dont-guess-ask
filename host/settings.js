@@ -97,7 +97,13 @@ export function registerSettingsApi(ctx, pluginCtx, read) {
       const body = await readJson(req)
       const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
       if (sessionId === '') throw httpError('缺少 sessionId', 400)
-      if (typeof read.activeSession === 'function') read.activeSession(sessionId, req.headers.host)
+      if (typeof read.activeSession === 'function') {
+        read.activeSession({
+          sessionId,
+          ...typeof body.focused === 'boolean' ? { focused: body.focused } : {},
+          ...typeof body.visible === 'boolean' ? { visible: body.visible } : {},
+        }, req.headers.host)
+      }
       sendJson(res, 200, { ok: true, data: { sessionId } })
       return
     }

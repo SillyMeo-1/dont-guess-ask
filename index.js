@@ -75,7 +75,7 @@ const RESULT_SCHEMA = {
   properties: {
     status: {
       type: 'string',
-      enum: ['picked', 'custom', 'skipped', 'cancelled', 'none', 'pending', 'delegated', 'unavailable', 'failed'],
+      enum: ['picked', 'custom', 'skipped', 'cancelled', 'pending', 'delegated', 'unavailable', 'failed'],
       description: 'How the ask ended: a chosen candidate, the user\'s own wording, a skip, a closed card, a delegated caller, no answer surface, or an error.',
     },
     picked: { type: 'array', items: { type: 'string' } },
@@ -112,7 +112,7 @@ export function apply(ctx, config = {}) {
         mode: () => settings.mode,
         position: () => settings.bannerPosition,
         pendingCount: () => activeAsks.size,
-        activeSession: (sessionId, host) => setActiveSession(sessionId, host),
+        activeSession: (payload, host) => setActiveSession(payload, host),
         apiHost: host => learnApiHost(host),
         focus: {
           wait: timeoutMs => awaitFocus(timeoutMs),
@@ -180,9 +180,11 @@ async function run(ctx, settings, args, exec) {
   if (options.length < 2) throw new Error('options 少于 2 个：把用户可能想要的另一种理解也列出来。')
   if (options.length > 5) throw new Error('options 超过 5 个：只留最可能的 5 个，推荐项排第一。')
 
-  // The card always ends with one fixed option: a bare pick means "stop, I will
-  // say it myself", and typed text still overrides every label.
-  const offered = [...options, { label: NONE_LABEL, description: '先停一下，我把自己的说法补上。' }]
+  // The countdown exists only so an absent reader cannot block the turn. When the
+  // page reports this session focused and visible, the person is looking at the
+  // card and may be typing, so there is nothing to time out.
+  const askingSessionId = exec?.agent?.session?.header?.id ?? ''
+  const watching = isWatching(askingSessionId)
 
   const askId = registerAsk(ctx, exec, settings, question)
   let answer
@@ -193,12 +195,12 @@ async function run(ctx, settings, args, exec) {
         question,
         header: settings.header,
         ...guess === '' ? {} : { detail: guess },
-        options: offered,
+        options,
       }],
       ...exec.agent === undefined ? {} : { agent: exec.agent },
       signal: exec.signal,
     }
-    const timed = settings.askTimeoutMs > 0 && exec.agent !== undefined && exec.callId !== undefined
+    const timed = !watching && settings.askTimeoutMs > 0 && exec.agent !== undefined && exec.callId !== undefined
     if (timed) {
       const result = await ctx.userQuestions.askTimed(request, exec.callId, settings.askTimeoutMs)
       if (isRecord(result) && result.pending === true) return { status: 'pending', timeoutMs: settings.askTimeoutMs }
@@ -233,14 +235,22 @@ function sessionTitleOf(ctx, exec) {
   }
 }
 
-/** Fixed last option offered on every card. */
-const NONE_LABEL = '都不是，我来说'
-
 /** Asks currently waiting for an answer, keyed by a short id. */
 const activeAsks = new Map()
 
-/** Session the browser last reported as the one on screen. */
-let activeSessionId = ''
+/**
+ * What the page last reported: which session is on screen, and whether its
+ * window is both focused and visible. `undefined` means the page never said.
+ */
+const activeSession = { id: '', focused: undefined, visible: undefined }
+
+/** True when the person is looking at this session right now. */
+function isWatching(sessionId) {
+  if (sessionId === '') return false
+  if (activeSession.id !== sessionId) return false
+  if (activeSession.visible === false) return false
+  return activeSession.focused === true
+}
 
 /** `host:port` the page reached the plugin API on, learned from the last beacon. */
 let bannerApiHost = ''
@@ -277,7 +287,7 @@ function bannerPayload() {
     delayMs: pluginSettings?.bannerDelayMs ?? 1200,
     pollMs: 600,
     stopFile: bannerPaths().stop,
-    activeSessionId,
+    activeSessionId: activeSession.id,
     asks: [...activeAsks.values()].map(ask => ({
       id: ask.id,
       sessionId: ask.sessionId,
@@ -360,11 +370,19 @@ function unregisterAsk(id) {
   syncBanner()
 }
 
-/** The page reports the session on screen, so the banner can tell "looking at it". */
-function setActiveSession(sessionId, host) {
+/**
+ * The page reports the session on screen and whether its window is focused and
+ * visible, so the banner can tell "looking at it" and the ask can skip its
+ * countdown while the person is right there.
+ */
+function setActiveSession(payload, host) {
   if (typeof host === 'string' && host !== '' && host !== bannerApiHost) bannerApiHost = host
-  if (sessionId === activeSessionId) return
-  activeSessionId = sessionId
+  if (payload === null || typeof payload !== 'object') return
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId.trim() : ''
+  if (sessionId === '') return
+  activeSession.id = sessionId
+  if (typeof payload.focused === 'boolean') activeSession.focused = payload.focused
+  if (typeof payload.visible === 'boolean') activeSession.visible = payload.visible
   syncBanner()
 }
 
@@ -418,10 +436,7 @@ function fromAnswer(answer) {
     ? item.selected.filter(label => typeof label === 'string' && label !== '')
     : []
   if (custom !== '') return { status: 'custom', custom }
-  if (picked.length > 0) {
-    if (picked.length === 1 && picked[0] === NONE_LABEL) return { status: 'none' }
-    return { status: 'picked', picked }
-  }
+  if (picked.length > 0) return { status: 'picked', picked }
   return { status: 'skipped' }
 }
 
@@ -455,10 +470,6 @@ function describeResult(value) {
   if (status === 'cancelled') {
     return '用户关掉了选择框，没做选择——通常是他想自己说，或现在不想定这个。停下来，'
       + '用一句话在正文里问他这块要怎么做；不要按任何候选继续，也不要马上重开同一张卡。'
-  }
-  if (status === 'none') {
-    return '用户点了「都不是，我来说」但没写字：说明给的候选没覆盖他的想法。停下来，'
-      + '用一句话在正文里问他想要什么；不要按候选继续，也不要马上重开同一张卡。'
   }
   if (status === 'pending') {
     const seconds = Math.max(1, Math.round((Number(value.timeoutMs) || 120000) / 1000))

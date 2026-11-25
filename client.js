@@ -418,23 +418,35 @@ window.__ModuleLoader__.load({
     /* -------------------------------------------------------------- */
 
     /**
-     * Reports the session this window is showing, and collects a session the
-     * waiting banner asked to open. Renders nothing.
+     * Reports the session this window is showing plus whether the window is
+     * focused and visible, and collects a session the waiting banner asked to
+     * open. Renders nothing.
      */
     function SessionBeacon({ sessionId, openSession }) {
-      useEffect(() => {
-        if (typeof sessionId !== 'string' || sessionId === '') return undefined;
-        const controller = new AbortController();
+      const report = useCallback(() => {
+        if (typeof sessionId !== 'string' || sessionId === '') return;
+        const payload = {
+          sessionId,
+          focused: typeof document.hasFocus === 'function' ? document.hasFocus() : true,
+          visible: document.visibilityState !== 'hidden',
+        };
         fetch(API + '/active', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ sessionId }),
-          signal: controller.signal,
+          body: JSON.stringify(payload),
           keepalive: true,
         }).catch(() => {});
-        return () => controller.abort();
       }, [sessionId]);
+
+      useEffect(() => {
+        report();
+        const events = ['focus', 'blur', 'visibilitychange'];
+        for (const name of events) window.addEventListener(name, report);
+        return () => {
+          for (const name of events) window.removeEventListener(name, report);
+        };
+      }, [report]);
 
       useEffect(() => {
         let cancelled = false;
